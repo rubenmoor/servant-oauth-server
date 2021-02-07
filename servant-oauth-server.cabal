@@ -22,9 +22,12 @@ library
                      , Servant.OAuth.Server.TokenEndpoint
                      , Servant.OAuth.Server.Facebook
   build-depends:       base >= 4.7 && < 5
+                     , Cabal
                      , unordered-containers
+                     , reflex-dom-core
                      , servant
                      , servant-server
+                     , servant-reflex
                      , wai
                      , text
                      , jose

@@ -1,6 +1,4 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, GeneralizedNewtypeDeriving,
-    GADTs, TypeFamilies, TypeApplications, DefaultSignatures, TypeOperators, DataKinds,
-    OverloadedStrings, ExtendedDefaultRules, OverloadedLists #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, GeneralizedNewtypeDeriving, GADTs, TypeFamilies, TypeApplications, DataKinds, OverloadedStrings, ExtendedDefaultRules, OverloadedLists, LambdaCase #-}
 
 {-|
 Module: Servant.OAuth.Grants
@@ -14,6 +12,8 @@ The serialization instances require/emit the correct @grant_type@ parameter and 
 -}
 
 
+
+
 module Servant.OAuth.Grants where
 
 
@@ -25,6 +25,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as H
 import Control.Arrow
 import Control.Applicative
+import Control.Monad.Except (throwError)
 --import Control.Lens
 import Data.Proxy
 import Web.HttpApiData
@@ -33,6 +34,7 @@ import Data.Aeson
 import Data.Maybe
 import Data.Time
 import GHC.TypeLits
+import Data.Aeson.Types (typeMismatch, prependFailure)
 
 default(Text)
 
@@ -51,7 +53,7 @@ qstring f = BL.toStrict $ "?" <> urlEncodeForm f
 newtype CompactJWT = CompactJWT Text deriving (Eq, Show, FromJSON, ToJSON)
 instance (FromHttpApiData CompactJWT) where
     parseQueryParam = Right . CompactJWT
-    parseHeader h = ((pack . show) +++ CompactJWT) . T.decodeUtf8' . fromMaybe h $ B.stripPrefix "Bearer " h
+    parseHeader h = (pack . show +++ CompactJWT) . T.decodeUtf8' . fromMaybe h $ B.stripPrefix "Bearer " h
 instance (ToHttpApiData CompactJWT) where
     toQueryParam (CompactJWT t) = t
     toHeader (CompactJWT t) = "Bearer " <> T.encodeUtf8 t
@@ -60,7 +62,7 @@ instance (ToHttpApiData CompactJWT) where
 newtype OpaqueToken = OpaqueToken Text deriving (Eq, Ord, Show, FromJSON, ToJSON)
 instance (FromHttpApiData OpaqueToken) where
     parseQueryParam = Right . OpaqueToken
-    parseHeader h = ((pack . show) +++ OpaqueToken) . T.decodeUtf8' . fromMaybe h $ B.stripPrefix "Bearer " h
+    parseHeader h = (pack . show +++ OpaqueToken) . T.decodeUtf8' . fromMaybe h $ B.stripPrefix "Bearer " h
 instance (ToHttpApiData OpaqueToken) where
     toQueryParam (OpaqueToken t) = t
     toHeader (OpaqueToken t) = "Bearer " <> T.encodeUtf8 t
@@ -80,6 +82,7 @@ data OAuthTokenSuccess = OAuthTokenSuccess {
 instance ToJSON OAuthTokenSuccess where
     toJSON (OAuthTokenSuccess tok expt mrtok) = Object $
         "access_token" .= tok <> "expires_in" .= expt <> maybe mempty ("refresh_token" .=) mrtok
+
 instance FromJSON OAuthTokenSuccess where
     parseJSON = withObject "OAuthTokenSuccess" $ \o -> OAuthTokenSuccess
         <$> o .: "access_token"
@@ -108,18 +111,41 @@ data OAuthFailure = OAuthFailure {
     deriving (Eq, Read, Show)
 
 instance ToJSON OAuthErrorCode where
-    toJSON InvalidGrantRequest = String "invalid_request"
-    toJSON InvalidClient = String "invalid_client"
-    toJSON InvalidGrant = String "invalid_grant"
-    toJSON InvalidScope = String "invalid_scope"
-    toJSON UnauthorizedClient = String "unauthorized_client"
-    toJSON UnsupportedGrantType = String "unsupported_grant_type"
-    toJSON InvalidTarget = String "invalid_target"
-    toJSON TemporarilyUnavailable = String "temporarily_unavailable"
+    toJSON InvalidGrantRequest = "invalid_request"
+    toJSON InvalidClient = "invalid_client"
+    toJSON InvalidGrant = "invalid_grant"
+    toJSON InvalidScope = "invalid_scope"
+    toJSON UnauthorizedClient = "unauthorized_client"
+    toJSON UnsupportedGrantType = "unsupported_grant_type"
+    toJSON InvalidTarget = "invalid_target"
+    toJSON TemporarilyUnavailable = "temporarily_unavailable"
+
+instance FromJSON OAuthErrorCode where
+  parseJSON = \case
+    "invalid_request"         -> pure InvalidGrantRequest
+    "invalid_client"          -> pure InvalidClient
+    "invalid_grant"           -> pure InvalidGrant
+    "invalid_scope"           -> pure InvalidScope
+    "unauthorized_client"     -> pure UnauthorizedClient
+    "unsupported_grant_type"  -> pure UnsupportedGrantType
+    "invalid_target"          -> pure InvalidTarget
+    "temporarily_unavailable" -> pure TemporarilyUnavailable
+    invalid ->
+      prependFailure "parsing message failed, " (typeMismatch "String" invalid)
 
 instance ToJSON OAuthFailure where
     toJSON (OAuthFailure err mdesc muri) = Object $
-        "error" .= err <> maybe mempty ("error_description" .=) mdesc <> maybe mempty ("error_uri" .=) muri
+         "error" .= err
+      <> maybe mempty ("error_description" .=) mdesc
+      <> maybe mempty ("error_uri" .=) muri
+
+instance FromJSON OAuthFailure where
+  parseJSON (Object v) = OAuthFailure
+    <$> v .: "error"
+    <*> v .:? "error_description"
+    <*> v .:? "error_uri"
+  parseJSON invalid =
+    prependFailure "parsing message failed, " (typeMismatch "Object" invalid)
 
 -- * Grants
 
@@ -164,7 +190,7 @@ instance FromJSON OAuthGrantPassword where
 instance (KnownSymbol gt) => FromJSON (OAuthGrantOpaqueAssertion gt) where
     parseJSON = withObject ("assert_opaque:" <> symbolVal (Proxy @gt)) $ \o ->
         o .: "grant_type" >>= \pgt ->
-            if pgt == (symbolVal (Proxy @gt))
+            if pgt == symbolVal (Proxy @gt)
             then OAuthGrantOpaqueAssertion <$> o .: "assertion"
             else fail "wrong grant type"
 
@@ -218,31 +244,31 @@ instance FromForm OAuthGrantPassword where
     fromForm f = lookupUnique "grant_type" f >>= \gt ->
         if gt == "password"
         then OAuthGrantPassword <$> parseUnique "username" f <*> parseUnique "password" f
-        else fail "wrong grant type"
+        else throwError "wrong grant type"
 
 instance (KnownSymbol gt) => FromForm (OAuthGrantOpaqueAssertion gt) where
     fromForm f = parseUnique "grant_type" f >>= \pgt ->
-        if pgt == (symbolVal (Proxy @gt))
+        if pgt == symbolVal (Proxy @gt)
         then OAuthGrantOpaqueAssertion <$> parseUnique "assertion" f
-        else fail "wrong grant type"
+        else throwError "wrong grant type"
 
 instance FromForm OAuthGrantJWTAssertion where
     fromForm f = lookupUnique "grant_type" f >>= \gt ->
         if gt == "urn:ietf:params:oauth:grant-type:jwt-bearer"
         then OAuthGrantJWTAssertion <$> parseUnique "assertion" f
-        else fail "wrong grant type"
+        else throwError "wrong grant type"
 
 instance FromForm OAuthGrantCodePKCE where
     fromForm f = lookupUnique "grant_type" f >>= \gt ->
         if gt == "authorization_code"
         then OAuthGrantCodePKCE <$> parseUnique "code" f <*> parseUnique "code_verifier" f
-        else fail "wrong grant type"
+        else throwError "wrong grant type"
 
 instance FromForm OAuthGrantRefresh where
     fromForm f = lookupUnique "grant_type" f >>= \gt ->
         if gt == "refresh_token"
         then OAuthGrantRefresh <$> parseUnique "refresh_token" f
-        else fail "wrong grant type"
+        else throwError "wrong grant type"
 
 instance (FromHttpApiData s, FromForm a) => FromForm (WithScope s a) where
     fromForm f = WithScope <$> parseMaybe "scope" f <*> fromForm f

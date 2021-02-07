@@ -29,7 +29,7 @@ import Data.Time
 import Data.Time.Clock.POSIX
 
 import Network.HTTP.Client
-import Servant.Server.Internal.ServantErr
+import Servant.Server (ServerError, err502, err401)
 
 import Servant.OAuth.Server
 import Servant.OAuth.Server.TokenEndpoint
@@ -86,7 +86,7 @@ data FacebookSettings = FacebookSettings {
 
 -- | Checks a facebook access token and return its user ID as well as the raw response (which includes user info).
 -- Throws invalid grant if token is invalid, expired, ro for the wrong app id.
-checkFacebookAssertion :: (MonadIO m, MonadError ServantErr m) => FacebookSettings -> OAuthGrantFacebookAssertion -> m (FacebookUserId, FacebookTokenCheck)
+checkFacebookAssertion :: (MonadIO m, MonadError ServerError m) => FacebookSettings -> OAuthGrantFacebookAssertion -> m (FacebookUserId, FacebookTokenCheck)
 checkFacebookAssertion settings (OAuthGrantOpaqueAssertion tok) = do
     atok <- liftIO $ fbTokenProvider settings
     let req = (parseRequest_ "https://graph.facebook.com/debug_token") {
@@ -112,7 +112,7 @@ checkFacebookAssertion settings (OAuthGrantOpaqueAssertion tok) = do
     return (uid, result)
 
 -- | Retrieves user info given a valid facebook token. Use this to get infor cor creating a new user entry.
-getFacebookUserInfo :: (MonadIO m, MonadError ServantErr m) => FacebookSettings -> OAuthGrantFacebookAssertion -> m FacebookUserInfo
+getFacebookUserInfo :: (MonadIO m, MonadError ServerError m) => FacebookSettings -> OAuthGrantFacebookAssertion -> m FacebookUserInfo
 getFacebookUserInfo settings (OAuthGrantOpaqueAssertion tok) = do
     let req = (parseRequest_ "https://graph.facebook.com/v3.2/me?fields=id,name,short_name,email") {
             requestHeaders = [("Authorization", toHeader tok), ("Accept", "application/json")]}

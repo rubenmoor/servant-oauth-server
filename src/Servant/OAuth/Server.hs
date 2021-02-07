@@ -1,5 +1,12 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, OverloadedStrings,
-    GADTs, TypeFamilies, TypeApplications, DefaultSignatures, TypeOperators #-}
+{-# LANGUAGE DefaultSignatures     #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
 
 {-|
 Module: Servant.OAuth.Server
@@ -14,22 +21,29 @@ Claim types should implement the 'FromJWT' typeclass.
 
 module Servant.OAuth.Server where
 
-import Crypto.JWT
-import Servant.API
-import Servant.Server
-import Servant.Server.Internal.RoutingApplication
-import Network.Wai (Request, requestHeaders)
+import           Crypto.JWT
+import           Network.Wai                                (Request,
+                                                             requestHeaders)
+import           Servant.API
+import           Servant.Server
+import           Servant.Server.Internal
+import           Servant.Server.Internal.RoutingApplication
 
-import Data.Text (Text, unpack, pack)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
-import qualified Data.ByteString.Lazy as BL
-import Control.Monad.IO.Class
-import Control.Monad.Except
-import Control.Lens
-import Data.Proxy
+import           Control.Lens
+import           Control.Monad.Except
+import           Control.Monad.IO.Class
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy                       as BL
+import           Data.Proxy
+import           Data.Text                                  (Text, pack, unpack)
+import qualified Data.Text                                  as T
+import qualified Data.Text.Encoding                         as T
 
-import Servant.OAuth.Grants
+import           Reflex.Dom.Core                            (constDyn, Reflex(Dynamic))
+import           Servant.OAuth.Grants
+import           Servant.Reflex                             (HasClient (Client, clientWithRouteAndResultHandler))
+import qualified Servant.Common.Req (addHeader, addOptionalHeader)
+import Servant.Common.Req (Req(headers))
 
 
 -- | Extential type for a source of token verification keys.
@@ -75,6 +89,17 @@ instance (HasServer api context, HasContextEntry context JWTSettings, FromJWT a)
 
     hoistServerWithContext _ pc f s = hoistServerWithContext (Proxy :: Proxy api) pc f . s
 
+instance (HasClient t m sublayout tag, Reflex t)
+  => HasClient t m (AuthRequired claims :> sublayout) tag where
+
+  type Client t m (AuthRequired claims :> sublayout) tag =
+    Dynamic t (Either Text CompactJWT) -> Client t m sublayout tag
+
+  clientWithRouteAndResultHandler Proxy q t req baseurl opts wrap jwt =
+    let req' = Servant.Common.Req.addHeader "Authorization" jwt req
+    in  clientWithRouteAndResultHandler
+          (Proxy :: Proxy sublayout) q t req' baseurl opts wrap
+
 instance (HasServer api context, HasContextEntry context JWTSettings, FromJWT a) => HasServer (AuthOptional a :> api) context where
     type ServerT (AuthOptional a :> api) m = Maybe a -> ServerT api m
 
@@ -82,6 +107,17 @@ instance (HasServer api context, HasContextEntry context JWTSettings, FromJWT a)
         authCheck = withRequest $ checkJwtLogin (getContextEntry context)
 
     hoistServerWithContext _ pc f s = hoistServerWithContext (Proxy :: Proxy api) pc f . s
+
+instance (HasClient t m sublayout tag, Reflex t)
+  => HasClient t m (AuthOptional claims :> sublayout) tag where
+
+  type Client t m (AuthOptional claims :> sublayout) tag =
+    Dynamic t (Maybe CompactJWT) -> Client t m sublayout tag
+
+  clientWithRouteAndResultHandler Proxy q t req baseurl opts wrap dynMJwt =
+    let req' = Servant.Common.Req.addOptionalHeader "Authorization" dynMJwt req
+    in  clientWithRouteAndResultHandler
+          (Proxy :: Proxy sublayout) q t req' baseurl opts wrap
 
 -- | Checks a JWT for valifity and returns the required claims.
 checkAuthToken :: (FromJWT a) => JWTSettings -> CompactJWT -> IO (Either JWTError a)
@@ -114,19 +150,19 @@ data AuthError =
     | InsufficientScope Text
     deriving (Eq, Read, Show)
 
--- | Convert an authorization error into a 'ServantErr' with correct response code and body
-authErrorServant :: AuthError -> ServantErr
+-- | Convert an authorization error into a 'ServerError' with correct response code and body
+authErrorServant :: AuthError -> ServerError
 authErrorServant (AuthRequired msg) = err401 {errHeaders = [("WWW-Authenticate", "Bearer")], errBody = BL.fromStrict (T.encodeUtf8 msg)}
 authErrorServant (InvalidAuthRequest msg) = err400 {errHeaders = [("WWW-Authenticate", "Bearer error=\"invalid_request\"")], errBody = "Malformed authorization header: " <> BL.fromStrict (T.encodeUtf8 msg)}
 authErrorServant (InvalidToken msg) = err401 {errHeaders = [("WWW-Authenticate", "Bearer error=\"invalid_token\"")], errBody = BL.fromStrict (T.encodeUtf8 msg)}
 authErrorServant (InsufficientScope msg) = err403 {errHeaders = [("WWW-Authenticate", "Bearer error=\"insufficient_scope\"")], errBody = BL.fromStrict (T.encodeUtf8 msg)}
 
 -- | Throw an insufficient scope (403) error with a given message.
-throwForbidden :: (MonadError ServantErr m) => Text -> m a
+throwForbidden :: (MonadError ServerError m) => Text -> m a
 throwForbidden = throwError . authErrorServant . InsufficientScope
 
 -- | Throw a unauthorized or forbidden error depending on the whther the claimes are 'Nothing' or 'Just'.
 -- For use in endpoints using 'AuthOptional'.
-throwForbiddenOrLogin :: (FromJWT auth, MonadError ServantErr m) => Maybe auth -> Text -> m a
+throwForbiddenOrLogin :: (FromJWT auth, MonadError ServerError m) => Maybe auth -> Text -> m a
 throwForbiddenOrLogin (Just _) = throwForbidden
-throwForbiddenOrLogin Nothing = throwError . authErrorServant . AuthRequired
+throwForbiddenOrLogin Nothing  = throwError . authErrorServant . AuthRequired

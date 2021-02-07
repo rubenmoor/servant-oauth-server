@@ -67,7 +67,7 @@ type OAuthTokenEndpoint grant =
 -- | Token endpoint which does not issue refresh tokens.
 -- Takes in token signing settings and an action to verify grants and convert them to token claims,
 -- which should throw an error (using 'throwInvalidGrant') in the event of an invalid grant.
-tokenEndpointNoRefresh :: forall m grant claims. (MonadIO m, MonadError ServantErr m, ToJWTClaims claims) =>
+tokenEndpointNoRefresh :: forall m grant claims. (MonadIO m, MonadError ServerError m, ToJWTClaims claims) =>
     JWTSignSettings -> (grant -> m claims) -> ServerT (OAuthTokenEndpoint grant) m
 tokenEndpointNoRefresh signSettings doAuth = \case
     Left _ -> throwServantErrJSON err400 $ OAuthFailure InvalidGrantRequest (Just "unable to parse token request") Nothing
@@ -79,7 +79,7 @@ tokenEndpointNoRefresh signSettings doAuth = \case
 -- | Token endpoint with refresh tokens.
 -- Takes signing settings, an action to create and store a refresh token, and an action to validate grants and return claims.
 -- The validation actuon must also return a Bool indicating whether a refresh token is to be created.
-tokenEndpointWithRefresh  :: forall m grant claims. (MonadIO m, MonadError ServantErr m, ToJWTClaims claims) =>
+tokenEndpointWithRefresh  :: forall m grant claims. (MonadIO m, MonadError ServerError m, ToJWTClaims claims) =>
     JWTSignSettings -> (claims -> m RefreshToken) -> (grant -> m (claims, Bool)) -> ServerT (OAuthTokenEndpoint grant) m
 tokenEndpointWithRefresh signSettings makeRefresh doAuth = \case
     Left _ -> throwServantErrJSON err400 $ OAuthFailure InvalidGrantRequest (Just "unable to parse token request") Nothing
@@ -91,12 +91,12 @@ tokenEndpointWithRefresh signSettings makeRefresh doAuth = \case
         tok <- liftIO $ makeAccessToken signSettings claims
         return $ OAuthTokenSuccess tok (jwtDuration signSettings) rtok
 
--- | Throws a 'ServantErr' with a JSON formatted body.
-throwServantErrJSON :: (MonadError ServantErr m, ToJSON v) => ServantErr -> v -> m a
+-- | Throws a 'ServerError' with a JSON formatted body.
+throwServantErrJSON :: (MonadError ServerError m, ToJSON v) => ServerError -> v -> m a
 throwServantErrJSON err val = throwError $ err {errHeaders = [("Content-Type", "application/json")], errBody = encode val}
 
 -- | Throws an 'OAuthFailure' response indicating an invalid grant (status code 401).
-throwInvalidGrant :: (MonadError ServantErr m) => Text -> m a
+throwInvalidGrant :: (MonadError ServerError m) => Text -> m a
 throwInvalidGrant msg = throwServantErrJSON err401 $ OAuthFailure InvalidGrant (Just msg) Nothing
 
 -- | Creates a JWT from User entity and a signing key valid for a given length of time.
